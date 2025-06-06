@@ -6,4 +6,4 @@ Uma biblioteca Python para descoberta inteligente de segmentos com uplift positi
 
 ### Opção 1: Instalar diretamente do GitHub
 ```bash
-pip install git+https://github.com/seuusuario/SegmentFinder.git
+pip install git+https://github.com/ccavalieri/SegmentFinder.git
