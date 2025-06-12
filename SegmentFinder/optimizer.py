@@ -293,7 +293,7 @@ class BruteForceFinder:
             If the progress bar has to be displayed (default: True)
         objective: : string, optional
             The objective that has to be optimize: additional_convertions (dafault), 
-            segment_size or uplift
+            segment_size, uplift, or min_uplift
         
         Returns:
         --------
@@ -312,6 +312,7 @@ class BruteForceFinder:
         print(f"- Tamanho mínimo do segmento: {self.min_segment_size}")
         print(f"- Máximo de {max_conditions} condições por segmento")
         print(f"- Limite de combinações: {max_combinations:,}")
+        print(f"- Objetivo: {objective}")
         
         # Generates all possible conditions
         conditions_by_feature = self.generate_feature_conditions(
@@ -379,6 +380,9 @@ class BruteForceFinder:
             'valid_segments': 0
         }
         
+        # Special case for min_uplift objective when min_uplift is 0
+        is_min_uplift_zero = (objective == 'min_uplift' and self.min_uplift == 0)
+        
         # Tests all combinations
         for num_conditions in range(1, max_conditions + 1):
             if not show_progress:
@@ -413,7 +417,10 @@ class BruteForceFinder:
                         valid_rate = (stats['valid_segments'] / combinations_tested * 100) if combinations_tested > 0 else 0
                         postfix = f"Válidos: {stats['valid_segments']} ({valid_rate:.1f}%)"
                         if len(best_segments) > 0:
-                            postfix += f", Melhor: {best_segments[0]['uplift']:.1%}"
+                            if objective == 'min_uplift':
+                                postfix += f", Menor uplift: {best_segments[0]['uplift']:.1%}"
+                            else:
+                                postfix += f", Melhor: {best_segments[0]['uplift']:.1%}"
                         progress_bar.set_postfix_str(postfix)
                 
                 # Apply conditions and creates segment
@@ -437,9 +444,17 @@ class BruteForceFinder:
                 # Calculates uplift
                 uplift, test_conv, control_conv, is_sig, p_val = self.calculate_uplift_with_significance(segment)
                 
-                if uplift < self.min_uplift:
-                    stats['low_uplift'] += 1
-                    continue
+                # Special handling for min_uplift objective when min_uplift is 0
+                if is_min_uplift_zero:
+                    # For min_uplift with min_uplift=0, we want uplift >= 0
+                    if uplift < 0:
+                        stats['low_uplift'] += 1
+                        continue
+                else:
+                    # Standard behavior: uplift must be >= min_uplift
+                    if uplift < self.min_uplift:
+                        stats['low_uplift'] += 1
+                        continue
                 
                 stats['valid_segments'] += 1
                 
@@ -461,9 +476,17 @@ class BruteForceFinder:
                     'num_conditions': num_conditions
                 })
                 
-                # Sort to keep the 50 best segments
+                # Sort based on objective
                 if len(best_segments) > 100:
-                    best_segments.sort(key=lambda x: x[objective], reverse=True)
+                    if objective == 'min_uplift':
+                        # For min_uplift, we want to minimize uplift first, then maximize segment size
+                        best_segments.sort(key=lambda x: (x['uplift'], -x['segment_size']))
+                    elif objective == 'segment_size':
+                        best_segments.sort(key=lambda x: x['segment_size'], reverse=True)
+                    elif objective == 'uplift':
+                        best_segments.sort(key=lambda x: x['uplift'], reverse=True)
+                    else:  # additional_conversions
+                        best_segments.sort(key=lambda x: x['additional_conversions'], reverse=True)
                     best_segments = best_segments[:50]  
             
             if not show_progress:
@@ -487,7 +510,10 @@ class BruteForceFinder:
         print(f"\n🔍 Motivos de rejeição:")
         print(f"   Segmento muito pequeno: {stats['too_small']:,}")
         print(f"   Grupos insuficientes: {stats['insufficient_groups']:,}")
-        print(f"   Uplift baixo: {stats['low_uplift']:,}")
+        if is_min_uplift_zero:
+            print(f"   Uplift negativo: {stats['low_uplift']:,}")
+        else:
+            print(f"   Uplift baixo: {stats['low_uplift']:,}")
         
         print(f"\n✅ Resultado:")
         print(f"   Segmentos válidos: {stats['valid_segments']:,}")
@@ -501,16 +527,40 @@ class BruteForceFinder:
         print(f"Segmentos válidos encontrados: {len(best_segments)}")
         
         if len(best_segments) > 0:
-            best_segments.sort(key=lambda x: x['additional_conversions'], reverse=True)
+            # Final sorting based on objective
+            if objective == 'min_uplift':
+                # For min_uplift: sort by uplift ascending, then by segment_size descending
+                best_segments.sort(key=lambda x: (x['uplift'], -x['segment_size']))
+                
+                min_uplift_found = best_segments[0]['uplift']
+                max_segment_size = best_segments[0]['segment_size']
+                
+                print(f"Menor uplift encontrado: {min_uplift_found:.2%}")
+                print(f"Tamanho do maior segmento com menor uplift: {max_segment_size:,}")
+                
+            elif objective == 'segment_size':
+                best_segments.sort(key=lambda x: x['segment_size'], reverse=True)
+                
+                largest_segment = best_segments[0]['segment_size']
+                print(f"Maior segmento encontrado: {largest_segment:,} usuários")
+                
+            elif objective == 'uplift':
+                best_segments.sort(key=lambda x: x['uplift'], reverse=True)
+                
+                best_uplift = best_segments[0]['uplift']
+                print(f"Melhor uplift encontrado: {best_uplift:.2%}")
+                
+            else:  # additional_conversions
+                best_segments.sort(key=lambda x: x['additional_conversions'], reverse=True)
+                
+                best_uplift = best_segments[0]['uplift']
+                best_additional = best_segments[0]['additional_conversions']
+                
+                print(f"Melhor uplift encontrado: {best_uplift:.2%}")
+                print(f"Máximo de conversões adicionais: {best_additional:.1f}")
             
-            best_uplift = best_segments[0]['uplift']
-            best_additional = best_segments[0]['additional_conversions']
-            
-            print(f"Melhor uplift encontrado: {best_uplift:.2%}")
-            print(f"Máximo de conversões adicionais: {best_additional:.1f}")
-            
-            if overall_stats['uplift'] != float('inf') and best_uplift > overall_stats['uplift']:
-                improvement = best_uplift - overall_stats['uplift']
+            if overall_stats['uplift'] != float('inf') and best_segments[0]['uplift'] > overall_stats['uplift']:
+                improvement = best_segments[0]['uplift'] - overall_stats['uplift']
                 print(f"🎯 Melhoria vs uplift geral: +{improvement:.2%}")
             
         return best_segments
@@ -553,7 +603,7 @@ class BruteForceFinder:
             'segment_data': segment
         }
 
-    def print_results(self, segments, top_n=5):
+    def print_results(self, segments, top_n=5, objective='additional_conversions'):
         """
         Print results formatted
         """
@@ -561,9 +611,14 @@ class BruteForceFinder:
             print("Nenhum segmento encontrado com os critérios especificados.")
             return
         
-        print(f"\n{'='*80}")
-        print(f"TOP {min(top_n, len(segments))} SEGMENTOS COM MAIOR UPLIFT")
-        print(f"{'='*80}")
+        if objective == 'min_uplift':
+            print(f"\n{'='*80}")
+            print(f"TOP {min(top_n, len(segments))} SEGMENTOS COM MENOR UPLIFT (E MAIOR TAMANHO)")
+            print(f"{'='*80}")
+        else:
+            print(f"\n{'='*80}")
+            print(f"TOP {min(top_n, len(segments))} SEGMENTOS COM MAIOR UPLIFT")
+            print(f"{'='*80}")
         
         for i, segment in enumerate(segments[:top_n], 1):
             print(f"\nSegmento {i}:")
