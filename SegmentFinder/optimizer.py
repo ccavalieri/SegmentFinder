@@ -380,8 +380,8 @@ class BruteForceFinder:
             'valid_segments': 0
         }
         
-        # Special case for min_uplift objective when min_uplift is 0
-        is_min_uplift_zero = (objective == 'min_uplift' and self.min_uplift == 0)
+        # Special handling for min_uplift objective
+        is_min_uplift_objective = (objective == 'min_uplift')
         
         # Tests all combinations
         for num_conditions in range(1, max_conditions + 1):
@@ -444,17 +444,10 @@ class BruteForceFinder:
                 # Calculates uplift
                 uplift, test_conv, control_conv, is_sig, p_val = self.calculate_uplift_with_significance(segment)
                 
-                # Special handling for min_uplift objective when min_uplift is 0
-                if is_min_uplift_zero:
-                    # For min_uplift with min_uplift=0, we want uplift >= 0
-                    if uplift < 0:
-                        stats['low_uplift'] += 1
-                        continue
-                else:
-                    # Standard behavior: uplift must be >= min_uplift
-                    if uplift < self.min_uplift:
-                        stats['low_uplift'] += 1
-                        continue
+                # Standard uplift filter: uplift must be >= min_uplift
+                if uplift < self.min_uplift:
+                    stats['low_uplift'] += 1
+                    continue
                 
                 stats['valid_segments'] += 1
                 
@@ -510,10 +503,7 @@ class BruteForceFinder:
         print(f"\n🔍 Motivos de rejeição:")
         print(f"   Segmento muito pequeno: {stats['too_small']:,}")
         print(f"   Grupos insuficientes: {stats['insufficient_groups']:,}")
-        if is_min_uplift_zero:
-            print(f"   Uplift negativo: {stats['low_uplift']:,}")
-        else:
-            print(f"   Uplift baixo: {stats['low_uplift']:,}")
+        print(f"   Uplift baixo: {stats['low_uplift']:,}")
         
         print(f"\n✅ Resultado:")
         print(f"   Segmentos válidos: {stats['valid_segments']:,}")
@@ -535,7 +525,7 @@ class BruteForceFinder:
                 min_uplift_found = best_segments[0]['uplift']
                 max_segment_size = best_segments[0]['segment_size']
                 
-                print(f"Menor uplift encontrado: {min_uplift_found:.2%}")
+                print(f"Menor uplift encontrado (>= {self.min_uplift:.1%}): {min_uplift_found:.2%}")
                 print(f"Tamanho do maior segmento com menor uplift: {max_segment_size:,}")
                 
             elif objective == 'segment_size':
