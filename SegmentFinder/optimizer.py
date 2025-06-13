@@ -11,7 +11,7 @@ class BruteForceFinder:
 
     """
     
-    def __init__(self, min_uplift=0.05, min_segment_size=1000, significance_level=0.05):
+    def __init__(self, min_uplift=0.05, min_segment_size=1000, significance_level=0.05, margin=0.01):
         """
         Parameters:
         -----------
@@ -21,10 +21,13 @@ class BruteForceFinder:
             Minimal segment size
         significance_level : float
             A/B test significance level (default: 0.05)
+        margin : float
+            Margin in percentage points above min_uplift for min_uplift objective (default: 0.01 = 1pp)
         """
         self.min_uplift = min_uplift
         self.min_segment_size = min_segment_size
         self.significance_level = significance_level
+        self.margin = margin
     
     def calculate_uplift_with_significance(self, df_segment):
         """
@@ -314,6 +317,13 @@ class BruteForceFinder:
         print(f"- Limite de combinações: {max_combinations:,}")
         print(f"- Objetivo: {objective}")
         
+        # Special configuration for min_uplift objective
+        if objective == 'min_uplift':
+            max_uplift_threshold = self.min_uplift + self.margin
+            print(f"- Margem para min_uplift: {self.margin:.1%}")
+            print(f"- Faixa de uplift aceita: {self.min_uplift:.1%} a {max_uplift_threshold:.1%}")
+            print(f"- Otimizando por: conversões absolutas no grupo teste")
+        
         # Generates all possible conditions
         conditions_by_feature = self.generate_feature_conditions(
             df, features, numeric_percentiles, custom_thresholds
@@ -377,11 +387,13 @@ class BruteForceFinder:
             'too_small': 0,
             'insufficient_groups': 0,
             'low_uplift': 0,
+            'high_uplift_min_uplift': 0,  # New: for min_uplift objective when uplift is too high
             'valid_segments': 0
         }
         
         # Special handling for min_uplift objective
         is_min_uplift_objective = (objective == 'min_uplift')
+        max_uplift_threshold = self.min_uplift + self.margin if is_min_uplift_objective else float('inf')
         
         # Tests all combinations
         for num_conditions in range(1, max_conditions + 1):
@@ -418,7 +430,7 @@ class BruteForceFinder:
                         postfix = f"Válidos: {stats['valid_segments']} ({valid_rate:.1f}%)"
                         if len(best_segments) > 0:
                             if objective == 'min_uplift':
-                                postfix += f", Menor uplift: {best_segments[0]['uplift']:.1%}"
+                                postfix += f", Melhor: {best_segments[0]['absolute_conversions']:.0f} conv."
                             else:
                                 postfix += f", Melhor: {best_segments[0]['uplift']:.1%}"
                         progress_bar.set_postfix_str(postfix)
@@ -444,15 +456,28 @@ class BruteForceFinder:
                 # Calculates uplift
                 uplift, test_conv, control_conv, is_sig, p_val = self.calculate_uplift_with_significance(segment)
                 
-                # Standard uplift filter: uplift must be >= min_uplift
-                if uplift < self.min_uplift:
-                    stats['low_uplift'] += 1
-                    continue
+                # Modified uplift filter for min_uplift objective
+                if is_min_uplift_objective:
+                    # For min_uplift: accept only uplifts within the range [min_uplift, min_uplift + margin]
+                    if uplift < self.min_uplift:
+                        stats['low_uplift'] += 1
+                        continue
+                    if uplift > max_uplift_threshold:
+                        stats['high_uplift_min_uplift'] += 1
+                        continue
+                else:
+                    # Standard uplift filter: uplift must be >= min_uplift
+                    if uplift < self.min_uplift:
+                        stats['low_uplift'] += 1
+                        continue
                 
                 stats['valid_segments'] += 1
                 
                 # Calculates additional convertions
                 additional_conversions = test_count * (test_conv - control_conv)
+                
+                # Calculate absolute conversions in test group
+                absolute_conversions = test_count * test_conv
                 
                 # Adds to best segments list
                 best_segments.append({
@@ -464,6 +489,7 @@ class BruteForceFinder:
                     'test_conversion': test_conv,
                     'control_conversion': control_conv,
                     'additional_conversions': additional_conversions,
+                    'absolute_conversions': absolute_conversions,  # New field
                     'is_significant': is_sig,
                     'p_value': p_val,
                     'num_conditions': num_conditions
@@ -472,8 +498,8 @@ class BruteForceFinder:
                 # Sort based on objective
                 if len(best_segments) > 100:
                     if objective == 'min_uplift':
-                        # For min_uplift, we want to minimize uplift first, then maximize segment size
-                        best_segments.sort(key=lambda x: (x['uplift'], -x['segment_size']))
+                        # For min_uplift, we want to maximize absolute conversions within the uplift range
+                        best_segments.sort(key=lambda x: x['absolute_conversions'], reverse=True)
                     elif objective == 'segment_size':
                         best_segments.sort(key=lambda x: x['segment_size'], reverse=True)
                     elif objective == 'uplift':
@@ -504,6 +530,8 @@ class BruteForceFinder:
         print(f"   Segmento muito pequeno: {stats['too_small']:,}")
         print(f"   Grupos insuficientes: {stats['insufficient_groups']:,}")
         print(f"   Uplift baixo: {stats['low_uplift']:,}")
+        if is_min_uplift_objective:
+            print(f"   Uplift alto demais (>{max_uplift_threshold:.1%}): {stats['high_uplift_min_uplift']:,}")
         
         print(f"\n✅ Resultado:")
         print(f"   Segmentos válidos: {stats['valid_segments']:,}")
@@ -519,14 +547,15 @@ class BruteForceFinder:
         if len(best_segments) > 0:
             # Final sorting based on objective
             if objective == 'min_uplift':
-                # For min_uplift: sort by uplift ascending, then by segment_size descending
-                best_segments.sort(key=lambda x: (x['uplift'], -x['segment_size']))
+                # For min_uplift: sort by absolute conversions descending
+                best_segments.sort(key=lambda x: x['absolute_conversions'], reverse=True)
                 
-                min_uplift_found = best_segments[0]['uplift']
-                max_segment_size = best_segments[0]['segment_size']
+                best_absolute_conversions = best_segments[0]['absolute_conversions']
+                best_uplift = best_segments[0]['uplift']
                 
-                print(f"Menor uplift encontrado (>= {self.min_uplift:.1%}): {min_uplift_found:.2%}")
-                print(f"Tamanho do maior segmento com menor uplift: {max_segment_size:,}")
+                print(f"Maior número de conversões absolutas: {best_absolute_conversions:.0f}")
+                print(f"Uplift correspondente: {best_uplift:.2%}")
+                print(f"Faixa de uplift considerada: {self.min_uplift:.1%} a {max_uplift_threshold:.1%}")
                 
             elif objective == 'segment_size':
                 best_segments.sort(key=lambda x: x['segment_size'], reverse=True)
@@ -578,6 +607,7 @@ class BruteForceFinder:
             return None
         
         additional_conversions = test_count * (test_conv - control_conv)
+        absolute_conversions = test_count * test_conv
         
         return {
             'conditions': conditions,
@@ -588,6 +618,7 @@ class BruteForceFinder:
             'test_conversion': test_conv,
             'control_conversion': control_conv,
             'additional_conversions': additional_conversions,
+            'absolute_conversions': absolute_conversions,
             'is_significant': is_sig,
             'p_value': p_val,
             'segment_data': segment
@@ -603,7 +634,8 @@ class BruteForceFinder:
         
         if objective == 'min_uplift':
             print(f"\n{'='*80}")
-            print(f"TOP {min(top_n, len(segments))} SEGMENTOS COM MENOR UPLIFT (E MAIOR TAMANHO)")
+            print(f"TOP {min(top_n, len(segments))} SEGMENTOS COM MAIOR NÚMERO DE CONVERSÕES ABSOLUTAS")
+            print(f"(Uplift entre {self.min_uplift:.1%} e {self.min_uplift + self.margin:.1%})")
             print(f"{'='*80}")
         else:
             print(f"\n{'='*80}")
@@ -616,6 +648,7 @@ class BruteForceFinder:
             print(f"  Conversão Teste: {segment['test_conversion']:.2%}")
             print(f"  Conversão Controle: {segment['control_conversion']:.2%}")
             print(f"  Conversões Adicionais: {segment['additional_conversions']:.1f}")
+            print(f"  Conversões Absolutas (Teste): {segment['absolute_conversions']:.1f}")
             
             if segment['is_significant']:
                 print(f"  Estatisticamente Significativo (p={segment['p_value']:.4f})")
