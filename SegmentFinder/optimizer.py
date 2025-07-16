@@ -11,7 +11,7 @@ class BruteForceFinder:
 
     """
     
-    def __init__(self, min_uplift=0.05, min_segment_size=1000, significance_level=0.05, margin=0.01):
+    def __init__(self, min_uplift=0.05, min_segment_size=1000, significance_level=0.05, margin=0.01, min_conversion=None):
         """
         Parameters:
         -----------
@@ -23,11 +23,14 @@ class BruteForceFinder:
             A/B test significance level (default: 0.05)
         margin : float
             Margin in percentage points above min_uplift for min_uplift objective (default: 0.01 = 1pp)
+        min_conversion : float, optional
+            Minimal conversion rate required for test group (ex: 0.10 = 10%)
         """
         self.min_uplift = min_uplift
         self.min_segment_size = min_segment_size
         self.significance_level = significance_level
         self.margin = margin
+        self.min_conversion = min_conversion
     
     def calculate_uplift_with_significance(self, df_segment):
         """
@@ -313,6 +316,8 @@ class BruteForceFinder:
         print(f"- Features: {features}")
         print(f"- Uplift mínimo: {self.min_uplift:.1%}")
         print(f"- Tamanho mínimo do segmento: {self.min_segment_size}")
+        if self.min_conversion is not None:
+            print(f"- Conversão mínima (teste): {self.min_conversion:.1%}")
         print(f"- Máximo de {max_conditions} condições por segmento")
         print(f"- Limite de combinações: {max_combinations:,}")
         print(f"- Objetivo: {objective}")
@@ -387,6 +392,7 @@ class BruteForceFinder:
             'too_small': 0,
             'insufficient_groups': 0,
             'low_uplift': 0,
+            'low_conversion': 0,  # New: for min_conversion restriction
             'high_uplift_min_uplift': 0,  # New: for min_uplift objective when uplift is too high
             'valid_segments': 0
         }
@@ -455,6 +461,11 @@ class BruteForceFinder:
                 
                 # Calculates uplift
                 uplift, test_conv, control_conv, is_sig, p_val = self.calculate_uplift_with_significance(segment)
+                
+                # Check minimum conversion restriction
+                if self.min_conversion is not None and test_conv < self.min_conversion:
+                    stats['low_conversion'] += 1
+                    continue
                 
                 # Modified uplift filter for min_uplift objective
                 if is_min_uplift_objective:
@@ -530,6 +541,8 @@ class BruteForceFinder:
         print(f"   Segmento muito pequeno: {stats['too_small']:,}")
         print(f"   Grupos insuficientes: {stats['insufficient_groups']:,}")
         print(f"   Uplift baixo: {stats['low_uplift']:,}")
+        if self.min_conversion is not None:
+            print(f"   Conversão baixa (teste <{self.min_conversion:.1%}): {stats['low_conversion']:,}")
         if is_min_uplift_objective:
             print(f"   Uplift alto demais (>{max_uplift_threshold:.1%}): {stats['high_uplift_min_uplift']:,}")
         
@@ -604,6 +617,10 @@ class BruteForceFinder:
         uplift, test_conv, control_conv, is_sig, p_val = self.calculate_uplift_with_significance(segment)
         
         if uplift < self.min_uplift:
+            return None
+        
+        # Check minimum conversion restriction
+        if self.min_conversion is not None and test_conv < self.min_conversion:
             return None
         
         additional_conversions = test_count * (test_conv - control_conv)
